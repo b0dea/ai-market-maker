@@ -201,10 +201,12 @@ class PerpEngine:
     def _apply_funding(
         self,
         symbol: str,
-        close: float,
+        previous_close: float,
         previous_timestamp_ms: int | None,
         timestamp_ms: int,
         funding_events: list[tuple[int, float]],
+        *,
+        current_open: float | None = None,
     ) -> None:
         if previous_timestamp_ms is None:
             return
@@ -218,7 +220,12 @@ class PerpEngine:
             pos = self.positions.get(symbol)
             if pos is None:
                 continue
-            notional = pos.size * close
+            mark = (
+                current_open
+                if settlement_timestamp_ms == timestamp_ms and current_open is not None
+                else previous_close
+            )
+            notional = pos.size * mark
             self.capital -= notional * rate * pos.direction
 
     def _check_liquidation(self, symbol: str, close: float, timestamp_ms: int) -> None:
@@ -408,6 +415,18 @@ class PerpEngine:
             last_close = {s: float(current[s][4]) for s in active_symbols}
             self._last_bar_ts = int(last_ts)
 
+            for sym in active_symbols:
+                if not completed[sym]:
+                    continue
+                self._apply_funding(
+                    sym,
+                    float(completed[sym][-1][4]),
+                    int(completed[sym][-1][0]),
+                    last_ts,
+                    funding_events.get(sym, []),
+                    current_open=bar_open[sym],
+                )
+
             signal_symbols = [symbol for symbol in active_symbols if completed[symbol]]
             if signal_symbols:
                 mark_closes = {
@@ -438,16 +457,15 @@ class PerpEngine:
                     )
 
             for sym in active_symbols:
-                previous_timestamp = int(completed[sym][-1][0]) if completed[sym] else None
-                self.on_bar(
+                self._check_liquidation(sym, last_close[sym], last_ts)
+                self._check_tp_sl(
                     sym,
                     bar_high[sym],
                     bar_low[sym],
                     last_close[sym],
                     last_ts,
-                    previous_timestamp_ms=previous_timestamp,
-                    funding_events=funding_events.get(sym),
                 )
+                self._check_timeout(sym, last_close[sym], last_ts)
 
             for sym in active_symbols:
                 completed[sym].append(current[sym])
@@ -482,8 +500,11 @@ class PerpEngine:
                             "warmup": bool(bar_idx < eval_start),
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    raise RuntimeError(
+                        "progress_callback failed "
+                        f"at bar {bar_idx} of {total_bars} for timestamp {last_ts}"
+                    ) from exc
 
         if total_bars > 0:
             final_ts = int(timestamps[-1])

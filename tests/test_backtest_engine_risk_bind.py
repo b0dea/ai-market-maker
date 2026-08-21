@@ -80,6 +80,77 @@ def test_funding_fee_applies():
     assert engine._funding_applied == {("BTC/USDT", settlement_timestamp)}
 
 
+def test_current_bar_entry_does_not_pay_earlier_or_shared_timestamp_funding():
+    bars = [
+        [0, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [86_400_000, 200.0, 200.0, 200.0, 200.0, 10.0],
+    ]
+
+    engine = PerpEngine(
+        {
+            "initial_cash": 10_000,
+            "leverage": 1.0,
+            "maker_rate": 0.0,
+            "taker_rate": 0.0,
+            "slippage": 0.0,
+        }
+    )
+    engine.run(
+        {"BTC/USDT": bars},
+        lambda *_args: 1.0,
+        funding_events_by_symbol={
+            "BTC/USDT": [(43_200_000, 0.01), (86_400_000, 0.01)]
+        },
+    )
+
+    assert engine.capital == pytest.approx(10_000.0)
+
+
+def test_current_bar_exit_pays_elapsed_and_shared_timestamp_funding():
+    bars = [
+        [0, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [86_400_000, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [172_800_000, 200.0, 200.0, 200.0, 200.0, 10.0],
+    ]
+
+    def signal(_symbol, window, _positions, _account):
+        return 1.0 if len(window) == 1 else 0.0
+
+    engine = PerpEngine(
+        {
+            "initial_cash": 10_000,
+            "leverage": 1.0,
+            "maker_rate": 0.0,
+            "taker_rate": 0.0,
+            "slippage": 0.0,
+        }
+    )
+    engine.run(
+        {"BTC/USDT": bars},
+        signal,
+        funding_events_by_symbol={
+            "BTC/USDT": [(129_600_000, 0.01), (172_800_000, 0.01)]
+        },
+    )
+
+    # The elapsed settlement uses the prior close (100), while a settlement
+    # exactly at the next bar open uses that known open (200), before exit.
+    assert engine.capital == pytest.approx(19_700.0)
+
+
+def test_progress_callback_failure_aborts_with_step_context():
+    bars = [[0, 100.0, 100.0, 100.0, 100.0, 10.0]]
+
+    def fail_progress(_index, _total, _snapshot):
+        raise OSError("progress store unavailable")
+
+    engine = PerpEngine({"initial_cash": 10_000})
+    with pytest.raises(RuntimeError, match="progress_callback.*bar 0.*timestamp 0") as exc_info:
+        engine.run({"BTC/USDT": bars}, lambda *_args: 0.0, progress_callback=fail_progress)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
 def test_direction_change_flips_position():
     """Changing signal direction closes old → opens new."""
     bars = [[900_000 * i, 100.0, 101.0, 99.0, 100.0, 10.0] for i in range(20)]
