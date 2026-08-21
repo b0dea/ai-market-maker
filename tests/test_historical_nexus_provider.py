@@ -38,6 +38,7 @@ def _write_offline_root(tmp: Path, *, day: str = "2022-06-15") -> Path:
     (tmp / "derivatives").mkdir()
     fixture = {
         "date": day,
+        "observed_at": f"{day}T00:00:00Z",
         "source": "offline_fixtures",
         "endpoints": {
             "news": {
@@ -305,6 +306,59 @@ def test_daily_fixture_cannot_supply_gated_fred_or_fear_greed_fields(tmp_path: P
     assert "vix" not in overview
     assert "fear_greed_index" not in overview
     assert "fear_greed_label" not in overview
+
+
+def test_future_fixture_row_admits_neither_endpoint_nor_per_symbol_content(
+    tmp_path: Path,
+) -> None:
+    root = _write_offline_root(tmp_path)
+    fixture_path = root / "fixtures" / "nexus_daily.jsonl"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    fixture["observed_at"] = "2022-06-15T23:00:00Z"
+    fixture["endpoints"]["news"]["data"]["news"] = [
+        {"title": "future endpoint news", "source": "offline"}
+    ]
+    fixture["per_symbol"]["BTC/USDT"] = {
+        "news": {
+            "ok": True,
+            "data": {"news": [{"title": "future symbol news", "source": "offline"}]},
+        }
+    }
+    fixture_path.write_text(
+        json.dumps(fixture) + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = HistoricalNexusProvider(root=root).get_bundle(
+        as_of_ms=_ms("2022-06-15"),
+        universe=["BTC/USDT"],
+        primary="BTC/USDT",
+    )
+
+    assert bundle["endpoints"]["news"]["ok"] is False
+    assert bundle["per_symbol"]["by_symbol"] == {}
+    assert "no_daily_fixture:2022-06-15" in bundle["errors"]
+
+
+@pytest.mark.parametrize("observed_at", [None, "not-an-instant", "2022-06-15T23:00:00"])
+def test_fixture_row_requires_valid_timezone_aware_observed_at(
+    tmp_path: Path, observed_at: str | None
+) -> None:
+    root = _write_offline_root(tmp_path)
+    fixture_path = root / "fixtures" / "nexus_daily.jsonl"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    if observed_at is None:
+        fixture.pop("observed_at")
+    else:
+        fixture["observed_at"] = observed_at
+    fixture_path.write_text(json.dumps(fixture) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixture.*observed_at.*2022-06-15"):
+        HistoricalNexusProvider(root=root).get_bundle(
+            as_of_ms=_ms("2022-06-15"),
+            universe=["BTC/USDT"],
+            primary="BTC/USDT",
+        )
 
 
 def test_unexpected_derived_context_failure_is_contextual_and_fatal(

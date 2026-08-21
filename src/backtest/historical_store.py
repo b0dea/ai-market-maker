@@ -15,9 +15,14 @@ from nexus_data.historical.store import (
 )
 
 
-def load_nexus_for_date(date: str, *, data_dir: Path | None = None) -> dict[str, Any] | None:
+def load_nexus_for_date(
+    date: str,
+    *,
+    as_of_ms: int,
+    data_dir: Path | None = None,
+) -> dict[str, Any] | None:
     root = data_dir if data_dir is not None else data_root()
-    return load_fixture_for_date(date, root=root)
+    return load_fixture_for_date(date, as_of_ms=as_of_ms, root=root)
 
 
 def load_fear_greed_series(*, data_dir: Path | None = None) -> dict[str, int]:
@@ -43,7 +48,11 @@ def nexus_context_for_bar(
     *,
     data_dir: Path | None = None,
 ) -> dict[str, Any] | None:
-    return load_nexus_for_date(ms_to_utc_date(bar_ts_ms), data_dir=data_dir)
+    return load_nexus_for_date(
+        ms_to_utc_date(bar_ts_ms),
+        as_of_ms=int(bar_ts_ms),
+        data_dir=data_dir,
+    )
 
 
 __all__ = [

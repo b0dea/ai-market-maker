@@ -195,7 +195,7 @@ class HistoricalNexusProvider:
         primary = primary or (universe[0] if universe else "BTC/USDT")
         root = self._root
 
-        fixture = load_fixture_for_date(day, root=root) or {}
+        fixture = load_fixture_for_date(day, as_of_ms=ts, root=root) or {}
         endpoints: dict[str, Any] = dict(fixture.get("endpoints") or {})
         _remove_gated_fixture_fields(endpoints)
         per_symbol_fix = dict((fixture.get("per_symbol") or {}))

@@ -24,6 +24,10 @@ def _ms(day: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _end_of_day_ms(day: str) -> int:
+    return _ms(day) + 86_400_000 - 1
+
+
 def _btc_bars(n: int = 80) -> list[list[float]]:
     csv = DATA / "ohlcv" / "BTC_USDT_1d.csv"
     if not csv.is_file():
@@ -59,7 +63,7 @@ def test_pinned_bundle_feeds_desks_and_llm_context() -> None:
     assert bars and bars[0][5] > 0
     md = {ticker: {"ohlcv": bars}}
     bundle = HistoricalNexusProvider(root=DATA).get_bundle(
-        as_of_ms=_ms(day),
+        as_of_ms=_end_of_day_ms(day),
         universe=[ticker],
         market_data=md,
         primary=ticker,

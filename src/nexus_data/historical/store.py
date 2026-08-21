@@ -52,13 +52,33 @@ def _nexus_fixture_index(path_str: str) -> dict[str, dict[str, Any]]:
     return out
 
 
-def load_fixture_for_date(date: str, *, root: Path | None = None) -> dict[str, Any] | None:
+def _fixture_observed_at_ms(row: dict[str, Any], date: str) -> int:
+    raw = row.get("observed_at")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"fixture observed_at is missing for {date}")
+    try:
+        instant = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"fixture observed_at is invalid for {date}: {raw!r}") from exc
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError(f"fixture observed_at must include a timezone for {date}: {raw!r}")
+    return int(instant.timestamp() * 1000)
+
+
+def load_fixture_for_date(
+    date: str,
+    *,
+    as_of_ms: int,
+    root: Path | None = None,
+) -> dict[str, Any] | None:
     base = root or data_root()
     path = base / "fixtures" / "nexus_daily.jsonl"
     row = _nexus_fixture_index(str(path)).get(date)
     if not row:
         return None
-    return {k: v for k, v in row.items() if k != "date"}
+    if _fixture_observed_at_ms(row, date) > as_of_ms:
+        return None
+    return {k: v for k, v in row.items() if k not in {"date", "observed_at"}}
 
 
 @lru_cache(maxsize=4)
