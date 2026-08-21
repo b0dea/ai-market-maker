@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,18 @@ from nexus_data.historical.catalog import ccxt_to_vision_symbol, data_root
 
 def ms_to_utc_date(ts_ms: float | int) -> str:
     return datetime.fromtimestamp(float(ts_ms) / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def available_date_for_daily_source(source: str, as_of_ms: float | int) -> str:
+    instant = datetime.fromtimestamp(float(as_of_ms) / 1000.0, tz=timezone.utc)
+    if source == "fear_greed":
+        return instant.date().isoformat()
+    if source == "fred":
+        day = instant.date()
+        if (instant.hour, instant.minute, instant.second, instant.microsecond) < (21, 15, 0, 0):
+            day -= timedelta(days=1)
+        return day.isoformat()
+    raise ValueError(f"Unsupported daily source: {source}")
 
 
 @lru_cache(maxsize=2)
@@ -221,6 +233,7 @@ def ohlcv_csv_path(symbol: str, timeframe: str = "1d", *, root: Path | None = No
 
 
 __all__ = [
+    "available_date_for_daily_source",
     "ms_to_utc_date",
     "load_fixture_for_date",
     "funding_as_of",

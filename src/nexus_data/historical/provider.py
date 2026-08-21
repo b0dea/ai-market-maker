@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from nexus_data.historical.store import (
+    available_date_for_daily_source,
     funding_as_of,
     load_defillama,
     load_fear_greed,
@@ -161,6 +162,8 @@ class HistoricalNexusProvider:
     ) -> dict[str, Any]:
         ts = int(as_of_ms) if as_of_ms is not None else int(time.time() * 1000)
         day = ms_to_utc_date(ts)
+        fear_greed_available_date = available_date_for_daily_source("fear_greed", ts)
+        fred_available_date = available_date_for_daily_source("fred", ts)
         universe = [s for s in (universe or []) if isinstance(s, str)]
         primary = primary or (universe[0] if universe else "BTC/USDT")
         root = self._root
@@ -169,7 +172,7 @@ class HistoricalNexusProvider:
         endpoints: dict[str, Any] = dict(fixture.get("endpoints") or {})
         per_symbol_fix = dict((fixture.get("per_symbol") or {}))
 
-        fng = load_fear_greed(day, root=root)
+        fng = load_fear_greed(fear_greed_available_date, root=root)
         if fng is not None:
             endpoints.setdefault(
                 "sentiment",
@@ -203,7 +206,7 @@ class HistoricalNexusProvider:
 
         if fng is not None:
             _overlay_fear_greed(endpoints, fng)
-        fred = load_fred(day, root=root)
+        fred = load_fred(fred_available_date, root=root)
         if fred is not None:
             _overlay_fred(endpoints, fred)
         llama = load_defillama(day, root=root)
