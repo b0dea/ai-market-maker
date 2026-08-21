@@ -22,7 +22,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from config.runs_paths import runs_dir as _default_runs_dir
 
@@ -151,8 +151,19 @@ class PerpEngine:
     def round_size(self, raw: float) -> float:
         return round(max(raw, 0.0), 6)
 
-    def calc_commission(self, size: float, price: float, is_open: bool) -> float:
-        rate = self.taker_rate if is_open else self.maker_rate
+    def calc_commission(
+        self,
+        size: float,
+        price: float,
+        *,
+        liquidity: Literal["maker", "taker"],
+    ) -> float:
+        if liquidity == "maker":
+            rate = self.maker_rate
+        elif liquidity == "taker":
+            rate = self.taker_rate
+        else:
+            raise ValueError(f"Unsupported fill liquidity: {liquidity!r}")
         return size * price * rate
 
     def apply_slippage(self, price: float, direction: int) -> float:
@@ -552,7 +563,7 @@ class PerpEngine:
                 return
 
             margin = size * slipped / self.leverage
-            comm = self.calc_commission(size, slipped, is_open=True)
+            comm = self.calc_commission(size, slipped, liquidity="taker")
 
             if margin + comm > self.capital:
                 available = max(0.0, self.capital - comm)
@@ -560,7 +571,7 @@ class PerpEngine:
                 if size <= 1e-18:
                     return
                 margin = size * slipped / self.leverage
-                comm = self.calc_commission(size, slipped, is_open=True)
+                comm = self.calc_commission(size, slipped, liquidity="taker")
 
             self.capital -= margin + comm
             self.positions[symbol] = Position(
@@ -591,7 +602,7 @@ class PerpEngine:
         pnl = pos.direction * pos.size * (exit_price - pos.entry_price)
         margin = pos.initial_margin
         pnl_pct = (pnl / margin * 100) if margin > 1e-9 else 0.0
-        exit_comm = self.calc_commission(pos.size, exit_price, is_open=False)
+        exit_comm = self.calc_commission(pos.size, exit_price, liquidity="taker")
 
         self.capital += margin + pnl - exit_comm
         holding = max(self._bar_index - pos.entry_bar_index, 0)
