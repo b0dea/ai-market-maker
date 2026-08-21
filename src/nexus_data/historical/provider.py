@@ -20,6 +20,18 @@ from nexus_data.symbols import ccxt_to_nexus_pair_id
 
 logger = logging.getLogger(__name__)
 
+_GATED_FIXTURE_OVERVIEW_FIELDS = {
+    "effective_fed_funds_pct",
+    "fear_greed_index",
+    "fear_greed_label",
+    "fred_source",
+    "sp500_index",
+    "trade_weighted_usd_index",
+    "us_10y_yield_pct",
+    "vix",
+    "wti_crude_usd_per_bbl",
+}
+
 
 def _ok(data: Any) -> dict[str, Any]:
     return {"ok": True, "data": data}
@@ -101,6 +113,21 @@ def _overview_data(endpoints: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _remove_gated_fixture_fields(endpoints: dict[str, Any]) -> None:
+    overview = endpoints.get("market_overview")
+    if not isinstance(overview, dict) or not isinstance(overview.get("data"), dict):
+        return
+    data = {
+        key: value
+        for key, value in overview["data"].items()
+        if key not in _GATED_FIXTURE_OVERVIEW_FIELDS
+    }
+    if data:
+        endpoints["market_overview"] = {**overview, "data": data}
+    else:
+        endpoints.pop("market_overview", None)
+
+
 def _overlay_fear_greed(endpoints: dict[str, Any], fng: dict[str, Any]) -> None:
     """Stamp F&G onto market_overview so monetary_sentinel can blend it."""
     data = _overview_data(endpoints)
@@ -170,6 +197,7 @@ class HistoricalNexusProvider:
 
         fixture = load_fixture_for_date(day, root=root) or {}
         endpoints: dict[str, Any] = dict(fixture.get("endpoints") or {})
+        _remove_gated_fixture_fields(endpoints)
         per_symbol_fix = dict((fixture.get("per_symbol") or {}))
 
         fng = load_fear_greed(fear_greed_available_date, root=root)
@@ -201,8 +229,11 @@ class HistoricalNexusProvider:
                 d_per = derived.get("per_symbol")
                 if isinstance(d_per, dict) and d_per:
                     derived_ps = d_per
-            except Exception as e:
-                logger.debug("ohlcv derived context skipped: %s", e)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to build derived OHLCV context "
+                    f"for {primary} as of {ts}"
+                ) from exc
 
         if fng is not None:
             _overlay_fear_greed(endpoints, fng)

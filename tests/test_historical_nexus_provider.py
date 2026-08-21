@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from agents.monetary_sentinel import MonetarySentinelAgent
 from agents.news_narrative_miner import NewsNarrativeMinerAgent
 from agents.statistical_alpha_engine import StatisticalAlphaEngineAgent
@@ -268,6 +270,69 @@ def test_daily_source_publication_boundaries(tmp_path: Path) -> None:
     assert at_midnight["vix"] == 33.0
     assert before_fred["vix"] == 33.0
     assert at_fred["vix"] == 34.0
+
+
+def test_daily_fixture_cannot_supply_gated_fred_or_fear_greed_fields(tmp_path: Path) -> None:
+    root = _write_offline_root(tmp_path, day="2022-06-15")
+    fixture_path = root / "fixtures" / "nexus_daily.jsonl"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    fixture["endpoints"]["market_overview"] = {
+        "ok": True,
+        "data": {
+            "vix": 999.0,
+            "fear_greed_index": 99,
+            "fear_greed_label": "fixture poison",
+        },
+    }
+    fixture_path.write_text(json.dumps(fixture) + "\n", encoding="utf-8")
+    (root / "macro" / "fred_daily.csv").write_text(
+        "date,vix,source\n2022-06-15,34.0,fred_public_csv\n",
+        encoding="utf-8",
+    )
+    (root / "macro" / "fear_greed_daily.csv").write_text(
+        "date,value,label\n2022-06-16,12,Extreme Fear\n",
+        encoding="utf-8",
+    )
+
+    provider = HistoricalNexusProvider(root=root)
+    bundle = provider.get_bundle(
+        as_of_ms=_ms("2022-06-15"),
+        universe=["BTC/USDT"],
+        primary="BTC/USDT",
+    )
+    overview = (bundle["endpoints"].get("market_overview") or {}).get("data") or {}
+
+    assert "vix" not in overview
+    assert "fear_greed_index" not in overview
+    assert "fear_greed_label" not in overview
+
+
+def test_unexpected_derived_context_failure_is_contextual_and_fatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _write_offline_root(tmp_path)
+
+    def fail_derived(**_kwargs):
+        raise RuntimeError("indicator invariant broken")
+
+    monkeypatch.setattr(
+        "backtest.ohlcv_derived_context.build_ohlcv_derived_nexus_context",
+        fail_derived,
+    )
+    provider = HistoricalNexusProvider(root=root)
+
+    with pytest.raises(
+        RuntimeError,
+        match="derived OHLCV context.*BTC/USDT.*1655251200000",
+    ) as exc_info:
+        provider.get_bundle(
+            as_of_ms=_ms("2022-06-15"),
+            universe=["BTC/USDT"],
+            market_data={"BTC/USDT": {"ohlcv": _bars()}},
+            primary="BTC/USDT",
+        )
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 def test_sentinel_fng_only_still_risk_off() -> None:
