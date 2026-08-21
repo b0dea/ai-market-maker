@@ -1,0 +1,40 @@
+{
+  "argv": [
+    "/Users/alexandrubodea/dev/Repositories/OSS/ai-market-maker/.venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_inherited_correctness.py::test_d1_staggered_listing_does_not_fabricate_bars",
+    "tests/test_inherited_correctness.py::test_d2_daily_sources_do_not_admit_same_day_rows",
+    "tests/test_inherited_correctness.py::test_d3_funding_uses_symbol_events_sign_and_settlement_timestamp",
+    "tests/test_inherited_correctness.py::test_d4_market_exits_use_taker_commission",
+    "-q",
+    "--tb=short"
+  ],
+  "exit_code": 1,
+  "failures": [
+    {
+      "defect_id": "D1",
+      "failure_signature": "D1_NO_FABRICATED_PRELISTING_BAR",
+      "node_id": "tests/test_inherited_correctness.py::test_d1_staggered_listing_does_not_fabricate_bars"
+    },
+    {
+      "defect_id": "D2",
+      "failure_signature": "D2_SOURCE_PUBLICATION_GATE",
+      "node_id": "tests/test_inherited_correctness.py::test_d2_daily_sources_do_not_admit_same_day_rows"
+    },
+    {
+      "defect_id": "D3",
+      "failure_signature": "D3_EXPLICIT_FUNDING_EVENTS",
+      "node_id": "tests/test_inherited_correctness.py::test_d3_funding_uses_symbol_events_sign_and_settlement_timestamp"
+    },
+    {
+      "defect_id": "D4",
+      "failure_signature": "D4_TAKER_EXIT_COMMISSION",
+      "node_id": "tests/test_inherited_correctness.py::test_d4_market_exits_use_taker_commission"
+    }
+  ],
+  "red_revision": "e3020f4908b1572658cb0673570985377d5b8160",
+  "schema_version": 1,
+  "upstream_base_revision": "dd711507690450e9c4c9b170829b01f1e7d7f1b6",
+  "working_directory": "."
+}
