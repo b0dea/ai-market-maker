@@ -323,33 +323,50 @@ class PerpEngine:
         """
         symbols = sorted(bars_by_symbol.keys())
         aligned = self._align_bars(bars_by_symbol)
-        total_bars = len(aligned.get(symbols[0], []))
+        timestamps = sorted(aligned)
+        total_bars = len(timestamps)
+        completed: dict[str, list[list[float]]] = {symbol: [] for symbol in symbols}
+        rows_by_symbol: dict[str, list[list[float]]] = {symbol: [] for symbol in symbols}
+        for timestamp in timestamps:
+            for symbol, row in aligned[timestamp].items():
+                rows_by_symbol[symbol].append(row)
 
         run_id = run_id or f"perp_{int(time.time())}"
         runs_dir = runs_dir or _default_runs_dir()
 
-        for bar_idx in range(total_bars):
+        for bar_idx, last_ts in enumerate(timestamps):
             self._bar_index = bar_idx
-            # Completed bars only (no look-ahead). Signal at end of bar i-1 → fill at open of bar i.
-            completed = {s: aligned[s][:bar_idx] for s in symbols}
-            bar_open = {s: float(aligned[s][bar_idx][1]) for s in symbols}
-            bar_high = {s: float(aligned[s][bar_idx][2]) for s in symbols}
-            bar_low = {s: float(aligned[s][bar_idx][3]) for s in symbols}
-            last_close = {s: float(aligned[s][bar_idx][4]) for s in symbols}
-            last_ts = int(aligned[symbols[0]][bar_idx][0])
-            self._last_bar_ts = last_ts
+            current = aligned[last_ts]
+            active_symbols = sorted(current)
+            missing_marks = sorted(set(self.positions) - set(current))
+            if missing_marks:
+                missing = ", ".join(missing_marks)
+                raise ValueError(
+                    f"Missing current bar for open position(s) {missing} at timestamp {last_ts}"
+                )
 
-            if bar_idx > 0:
-                mark_closes = {s: float(aligned[s][bar_idx - 1][4]) for s in symbols}
+            bar_open = {s: float(current[s][1]) for s in active_symbols}
+            bar_high = {s: float(current[s][2]) for s in active_symbols}
+            bar_low = {s: float(current[s][3]) for s in active_symbols}
+            last_close = {s: float(current[s][4]) for s in active_symbols}
+            self._last_bar_ts = int(last_ts)
+
+            signal_symbols = [symbol for symbol in active_symbols if completed[symbol]]
+            if signal_symbols:
+                mark_closes = {
+                    symbol: float(rows[-1][4])
+                    for symbol, rows in completed.items()
+                    if rows
+                }
                 account = AccountSnapshot(
                     cash=float(self.capital),
-                    equity=float(self._equity(mark_closes)),
+                    equity=float(self._equity(mark_closes, timestamp_ms=int(last_ts))),
                 )
-                for sym in symbols:
+                for sym in signal_symbols:
                     target = float(
                         signal_fn(
                             sym,
-                            completed[sym],
+                            list(completed[sym]),
                             {k: v for k, v in self.positions.items()},
                             account,
                         )
@@ -360,10 +377,10 @@ class PerpEngine:
                         bar_open[sym],
                         last_close[sym],
                         last_ts,
-                        last_close,
+                        mark_closes,
                     )
 
-            for sym in symbols:
+            for sym in active_symbols:
                 self.on_bar(
                     sym,
                     bar_high[sym],
@@ -372,7 +389,10 @@ class PerpEngine:
                     last_ts,
                 )
 
-            eq = self._equity(last_close)
+            for sym in active_symbols:
+                completed[sym].append(current[sym])
+
+            eq = self._equity(last_close, timestamp_ms=int(last_ts))
             snap = EquitySnapshot(
                 timestamp=last_ts,
                 capital=self.capital,
@@ -406,21 +426,25 @@ class PerpEngine:
                     pass
 
         if total_bars > 0:
-            final_close = {s: float(aligned[s][-1][4]) for s in symbols}
-            final_ts = int(aligned[symbols[0]][-1][0])
+            final_ts = int(timestamps[-1])
+            final_close = {
+                symbol: float(aligned[final_ts][symbol][4])
+                for symbol in self.positions
+                if symbol in aligned[final_ts]
+            }
             for sym in list(self.positions.keys()):
                 self._close(
                     sym,
-                    final_close.get(sym, 0.0),
+                    final_close[sym],
                     "end_of_backtest",
                     exit_ts_ms=final_ts,
                 )
 
         metrics = self._calc_metrics()
         bench_sym = str(benchmark_symbol or "").strip()
-        if bench_sym not in aligned:
+        if bench_sym not in rows_by_symbol:
             bench_sym = symbols[0] if symbols else ""
-        primary_bars = aligned[bench_sym] if bench_sym and total_bars > 0 else []
+        primary_bars = rows_by_symbol[bench_sym] if bench_sym and total_bars > 0 else []
         eval_start = max(0, int(self._eval_start_bar))
         if eval_start > 0 and len(primary_bars) > eval_start:
             primary_bars = primary_bars[eval_start:]
@@ -431,7 +455,7 @@ class PerpEngine:
             metrics,
             primary_bars,
             benchmark_symbol=bench_sym,
-            aligned_bars=aligned,
+            aligned_bars=rows_by_symbol,
         )
 
     def _rebalance(
@@ -540,10 +564,18 @@ class PerpEngine:
             )
         )
 
-    def _equity(self, last_closes: dict[str, float]) -> float:
+    def _equity(
+        self,
+        last_closes: dict[str, float],
+        *,
+        timestamp_ms: int | None = None,
+    ) -> float:
         eq = self.capital
         for pos in self.positions.values():
-            px = last_closes.get(pos.symbol, pos.entry_price)
+            if pos.symbol not in last_closes:
+                context = f" at timestamp {timestamp_ms}" if timestamp_ms is not None else ""
+                raise ValueError(f"Missing mark for open position {pos.symbol}{context}")
+            px = last_closes[pos.symbol]
             u = pos.direction * pos.size * (px - pos.entry_price)
             eq += pos.initial_margin + u
         return eq
@@ -551,30 +583,12 @@ class PerpEngine:
     @staticmethod
     def _align_bars(
         bars_by_symbol: dict[str, list[list[float]]],
-    ) -> dict[str, list[list[float]]]:
-        import pandas as pd
-
-        aligned = {}
-        timestamps: set[int] = set()
-
-        data_frames = {}
-        for sym, rows in bars_by_symbol.items():
-            df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "v"])
-            df = df.set_index("ts").astype(float)
-            data_frames[sym] = df
-            timestamps.update(df.index.tolist())
-
-        common = sorted(timestamps)
-        for sym, df in data_frames.items():
-            reindexed = df.reindex(common).ffill().bfill()
-            aligned[sym] = [
-                [int(ts), o, hh, lo, c, v]
-                for ts, (o, hh, lo, c, v) in zip(
-                    common,
-                    reindexed[["o", "h", "l", "c", "v"]].itertuples(index=False, name=None),
-                    strict=True,
-                )
-            ]
+    ) -> dict[int, dict[str, list[float]]]:
+        aligned: dict[int, dict[str, list[float]]] = {}
+        for symbol in sorted(bars_by_symbol):
+            for source_row in bars_by_symbol[symbol]:
+                row = [int(source_row[0]), *(float(value) for value in source_row[1:6])]
+                aligned.setdefault(row[0], {})[symbol] = row
         return aligned
 
     def _infer_bar_interval_sec_from_snapshots(self) -> int:
