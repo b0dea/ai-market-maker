@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agents.monetary_sentinel import MonetarySentinelAgent
@@ -18,7 +18,19 @@ def _ms(day: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _ms_at(day: str, hour: int, minute: int = 0) -> int:
+    dt = datetime.strptime(day, "%Y-%m-%d").replace(
+        hour=hour,
+        minute=minute,
+        tzinfo=timezone.utc,
+    )
+    return int(dt.timestamp() * 1000)
+
+
 def _write_offline_root(tmp: Path, *, day: str = "2022-06-15") -> Path:
+    previous_day = (
+        datetime.strptime(day, "%Y-%m-%d").date() - timedelta(days=1)
+    ).isoformat()
     (tmp / "fixtures").mkdir(parents=True)
     (tmp / "macro").mkdir()
     (tmp / "derivatives").mkdir()
@@ -79,6 +91,7 @@ def _write_offline_root(tmp: Path, *, day: str = "2022-06-15") -> Path:
     (tmp / "macro" / "fred_daily.csv").write_text(
         "date,vix,us_10y_yield_pct,effective_fed_funds_pct,trade_weighted_usd_index,"
         "us_high_yield_oas_pct,sp500_index,wti_crude_usd_per_bbl,source\n"
+        f"{previous_day},33.0,3.2,1.57,119.0,,3780,109.0,fred_public_csv\n"
         "2022-06-15,34.0,3.3,1.58,120.0,,3800,110.0,fred_public_csv\n",
         encoding="utf-8",
     )
@@ -132,8 +145,8 @@ def test_bundle_maps_news_impact_and_fear_greed(tmp_path: Path):
     assert items[0]["impact_score"] == 44.0
     mo = bundle["endpoints"]["market_overview"]["data"]
     assert mo["fear_greed_index"] == 12
-    assert mo["vix"] == 34.0
-    assert mo["effective_fed_funds_pct"] == 1.58
+    assert mo["vix"] == 33.0
+    assert mo["effective_fed_funds_pct"] == 1.57
     assert mo["stablecoin_change_7d_pct"] == -9.5
     assert mo["onchain_liquidity_score"] < 50
     assert "systemic_liquidity_score" in mo
@@ -214,7 +227,7 @@ def test_desks_consume_historical_bundle(tmp_path: Path):
     assert mon["status"] == "success"
     assert mon["liquidity_regime"] == "risk_off"
     assert mon["inputs"]["fear_greed"] == 12
-    assert mon["inputs"]["vix"] == 34.0
+    assert mon["inputs"]["vix"] == 33.0
     assert mon["inputs"]["stablecoin_change_7d_pct"] == -9.5
     alpha = StatisticalAlphaEngineAgent().analyze(
         ticker=ticker, market_data=md, nexus_context=bundle
@@ -233,6 +246,28 @@ def test_fred_and_defillama_do_not_look_ahead(tmp_path: Path) -> None:
     mo = (bundle["endpoints"].get("market_overview") or {}).get("data") or {}
     assert mo.get("vix") is None
     assert mo.get("stablecoin_change_7d_pct") is None
+
+
+def test_daily_source_publication_boundaries(tmp_path: Path) -> None:
+    root = _write_offline_root(tmp_path, day="2022-06-15")
+    provider = HistoricalNexusProvider(root=root)
+
+    def overview(as_of_ms: int) -> dict:
+        bundle = provider.get_bundle(
+            as_of_ms=as_of_ms,
+            universe=["BTC/USDT"],
+            primary="BTC/USDT",
+        )
+        return (bundle["endpoints"].get("market_overview") or {}).get("data") or {}
+
+    at_midnight = overview(_ms("2022-06-15"))
+    before_fred = overview(_ms_at("2022-06-15", 21, 14))
+    at_fred = overview(_ms_at("2022-06-15", 21, 15))
+
+    assert at_midnight["fear_greed_index"] == 12
+    assert at_midnight["vix"] == 33.0
+    assert before_fred["vix"] == 33.0
+    assert at_fred["vix"] == 34.0
 
 
 def test_sentinel_fng_only_still_risk_off() -> None:
