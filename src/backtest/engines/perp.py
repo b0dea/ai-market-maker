@@ -3,7 +3,7 @@
 Model: USDT-margined linear perpetual contracts.
 - 24/7, long/short, no lot-size restrictions
 - Initial margin = notional / leverage
-- Funding fee settlement every 8h (dedup per slot)
+- Funding settlement from explicit per-symbol timestamped events
 - Tiered maintenance margin liquidation check
 
 Config keys (all plain dict, no env vars):
@@ -11,7 +11,6 @@ Config keys (all plain dict, no env vars):
   maker_rate=0.0002
   taker_rate=0.0005
   slippage=0.0005
-  funding_rate=0.0001
   initial_cash=10000
 """
 
@@ -19,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,9 +63,6 @@ _TIER_TABLE = [
     (10_000_000, 0.05),
     (float("inf"), 0.10),
 ]
-
-FUNDING_HOURS = {0, 8, 16}
-
 
 @dataclass
 class Position:
@@ -127,13 +124,12 @@ class PerpEngine:
         self.maker_rate: float = float(cfg.get("maker_rate", 0.0002))
         self.taker_rate: float = float(cfg.get("taker_rate", 0.0005))
         self.slippage_rate: float = float(cfg.get("slippage", 0.0005))
-        self.funding_rate: float = float(cfg.get("funding_rate", 0.0001))
 
         self.capital: float = self.initial_cash
         self.positions: dict[str, Position] = {}
         self.trades: list[Trade] = []
         self.snapshots: list[EquitySnapshot] = []
-        self._funding_applied: set[tuple[str, int, int]] = set()
+        self._funding_applied: set[tuple[str, int]] = set()
         self._bar_index: int = 0
         self._last_bar_ts: int = 0
         self._eval_start_bar: int = 0
@@ -176,37 +172,43 @@ class PerpEngine:
         low: float,
         close: float,
         timestamp_ms: int,
+        *,
+        previous_timestamp_ms: int | None = None,
+        funding_events: list[tuple[int, float]] | None = None,
     ) -> None:
-        self._apply_funding(symbol, close, timestamp_ms)
+        self._apply_funding(
+            symbol,
+            close,
+            previous_timestamp_ms,
+            timestamp_ms,
+            funding_events or [],
+        )
         self._check_liquidation(symbol, close, timestamp_ms)
         self._check_tp_sl(symbol, high, low, close, timestamp_ms)
         self._check_timeout(symbol, close, timestamp_ms)
 
-    def _apply_funding(self, symbol: str, close: float, ts_ms: int) -> None:
-        from datetime import datetime, timezone
-
-        dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-        slot = (dt.year, dt.month, dt.day, dt.hour)
-        hour = dt.hour
-
-        if hour in FUNDING_HOURS:
-            dedup_key = (symbol, slot)
-            if dedup_key in self._funding_applied:
-                return
-            self._funding_applied.add(dedup_key)
-        else:
-            day_key = (symbol, dt.year, dt.month, dt.day)
-            if day_key in self._funding_applied:
-                return
-            self._funding_applied.add(day_key)
-
-        pos = self.positions.get(symbol)
-        if pos is None:
+    def _apply_funding(
+        self,
+        symbol: str,
+        close: float,
+        previous_timestamp_ms: int | None,
+        timestamp_ms: int,
+        funding_events: list[tuple[int, float]],
+    ) -> None:
+        if previous_timestamp_ms is None:
             return
-
-        notional = pos.size * close
-        fee = notional * self.funding_rate * pos.direction
-        self.capital -= fee
+        for settlement_timestamp_ms, rate in funding_events:
+            if not (previous_timestamp_ms < settlement_timestamp_ms <= timestamp_ms):
+                continue
+            dedup_key = (symbol, settlement_timestamp_ms)
+            if dedup_key in self._funding_applied:
+                continue
+            self._funding_applied.add(dedup_key)
+            pos = self.positions.get(symbol)
+            if pos is None:
+                continue
+            notional = pos.size * close
+            self.capital -= notional * rate * pos.direction
 
     def _check_liquidation(self, symbol: str, close: float, timestamp_ms: int) -> None:
         pos = self.positions.get(symbol)
@@ -310,6 +312,7 @@ class PerpEngine:
         runs_dir: Path | None = None,
         progress_callback=None,
         benchmark_symbol: str | None = None,
+        funding_events_by_symbol: dict[str, list[tuple[int, float]]] | None = None,
     ) -> dict[str, Any]:
         """
         ``signal_fn(symbol, window, positions, account) -> float``
@@ -322,6 +325,7 @@ class PerpEngine:
         ``window`` is completed bars only (no look-ahead).
         """
         symbols = sorted(bars_by_symbol.keys())
+        externally_seeded_positions = dict(self.positions)
         aligned = self._align_bars(bars_by_symbol)
         timestamps = sorted(aligned)
         total_bars = len(timestamps)
@@ -330,6 +334,48 @@ class PerpEngine:
         for timestamp in timestamps:
             for symbol, row in aligned[timestamp].items():
                 rows_by_symbol[symbol].append(row)
+        funding_events: dict[str, list[tuple[int, float]]] = {}
+        for symbol in sorted(funding_events_by_symbol or {}):
+            normalized: list[tuple[int, float]] = []
+            rates_by_timestamp: dict[int, float] = {}
+            previous_event_timestamp: int | None = None
+            for event in funding_events_by_symbol[symbol]:
+                if not isinstance(event, (list, tuple)) or len(event) != 2:
+                    raise ValueError(f"Invalid funding event for {symbol}: expected (timestamp, rate)")
+                raw_timestamp, raw_rate = event
+                if (
+                    isinstance(raw_timestamp, bool)
+                    or not isinstance(raw_timestamp, (int, float))
+                    or not math.isfinite(float(raw_timestamp))
+                    or int(raw_timestamp) != float(raw_timestamp)
+                ):
+                    raise ValueError(f"Invalid funding timestamp for {symbol}: {raw_timestamp!r}")
+                settlement_timestamp = int(raw_timestamp)
+                if (
+                    previous_event_timestamp is not None
+                    and settlement_timestamp < previous_event_timestamp
+                ):
+                    raise ValueError(
+                        f"Out-of-order funding event for {symbol} at timestamp {settlement_timestamp}"
+                    )
+                if (
+                    isinstance(raw_rate, bool)
+                    or not isinstance(raw_rate, (int, float))
+                    or not math.isfinite(float(raw_rate))
+                ):
+                    raise ValueError(
+                        f"Invalid funding rate for {symbol} at timestamp {settlement_timestamp}"
+                    )
+                rate = float(raw_rate)
+                existing_rate = rates_by_timestamp.get(settlement_timestamp)
+                if existing_rate is not None and existing_rate != rate:
+                    raise ValueError(
+                        f"Conflicting funding rates for {symbol} at timestamp {settlement_timestamp}"
+                    )
+                rates_by_timestamp[settlement_timestamp] = rate
+                normalized.append((settlement_timestamp, rate))
+                previous_event_timestamp = settlement_timestamp
+            funding_events[symbol] = sorted(normalized)
 
         run_id = run_id or f"perp_{int(time.time())}"
         runs_dir = runs_dir or _default_runs_dir()
@@ -381,12 +427,15 @@ class PerpEngine:
                     )
 
             for sym in active_symbols:
+                previous_timestamp = int(completed[sym][-1][0]) if completed[sym] else None
                 self.on_bar(
                     sym,
                     bar_high[sym],
                     bar_low[sym],
                     last_close[sym],
                     last_ts,
+                    previous_timestamp_ms=previous_timestamp,
+                    funding_events=funding_events.get(sym),
                 )
 
             for sym in active_symbols:
@@ -432,7 +481,11 @@ class PerpEngine:
                 for symbol in self.positions
                 if symbol in aligned[final_ts]
             }
-            for sym in list(self.positions.keys()):
+            for sym in sorted(
+                symbol
+                for symbol, position in self.positions.items()
+                if position is not externally_seeded_positions.get(symbol)
+            ):
                 self._close(
                     sym,
                     final_close[sym],

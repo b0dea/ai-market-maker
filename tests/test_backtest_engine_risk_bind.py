@@ -53,7 +53,7 @@ def test_short_profits_on_downtrend():
 
 
 def test_funding_fee_applies():
-    """Funding fees are deducted."""
+    """Explicit funding events debit a long position once."""
     bars = [[900_000 * i, 100.0, 101.0, 99.0, 100.0, 10.0] for i in range(100)]
 
     def signal(sym, window, pos, cap):
@@ -61,12 +61,23 @@ def test_funding_fee_applies():
             return 0.0
         return 0.8
 
-    cfg = {"initial_cash": 10_000, "leverage": 3.0, "funding_rate": 0.001}
+    cfg = {
+        "initial_cash": 10_000,
+        "leverage": 3.0,
+        "maker_rate": 0.0,
+        "taker_rate": 0.0,
+        "slippage": 0.0,
+    }
     engine = PerpEngine(cfg)
-    engine.run({"BTC/USDT": bars}, signal)
+    settlement_timestamp = int(bars[3][0])
+    engine.run(
+        {"BTC/USDT": bars},
+        signal,
+        funding_events_by_symbol={"BTC/USDT": [(settlement_timestamp, 0.001)]},
+    )
 
-    capital_used = cfg["initial_cash"] - engine.capital
-    assert capital_used > 0, "Funding fees should reduce capital"
+    assert engine.capital == pytest.approx(9_976.0)
+    assert engine._funding_applied == {("BTC/USDT", settlement_timestamp)}
 
 
 def test_direction_change_flips_position():
