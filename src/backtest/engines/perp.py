@@ -575,6 +575,14 @@ class PerpEngine:
                     "end_of_backtest",
                     exit_ts_ms=final_ts,
                 )
+            final_equity = self._equity(final_close, timestamp_ms=final_ts)
+            self.snapshots[-1] = EquitySnapshot(
+                timestamp=final_ts,
+                capital=self.capital,
+                unrealized_pnl=final_equity - self.capital,
+                equity=final_equity,
+                position_count=len(self.positions),
+            )
 
         metrics = self._calc_metrics()
         bench_sym = str(benchmark_symbol or "").strip()
