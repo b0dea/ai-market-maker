@@ -165,9 +165,7 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
         signal,
         run_id="cost-events",
         runs_dir=tmp_path,
-        funding_events_by_symbol={
-            "BTC/USDT": [(129_600_000, 0.001), (172_800_000, 0.001)]
-        },
+        funding_events_by_symbol={"BTC/USDT": [(129_600_000, 0.001), (172_800_000, 0.001)]},
     )
 
     assert isinstance(engine.entry_fee_events, tuple)

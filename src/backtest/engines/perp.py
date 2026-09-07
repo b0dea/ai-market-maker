@@ -20,7 +20,7 @@ import json
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -108,6 +108,29 @@ class EquitySnapshot:
     position_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class FeeEvent:
+    symbol: str
+    timestamp_ms: int
+    size: float
+    price: float
+    rate: float
+    liquidity: Literal["maker", "taker"]
+    amount: float
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedFundingEvent:
+    symbol: str
+    timestamp_ms: int
+    direction: int
+    size: float
+    mark_price: float
+    rate: float
+    notional: float
+    amount: float
+
+
 class PerpEngine:
     """Perpetual-contract backtest engine.
 
@@ -130,6 +153,9 @@ class PerpEngine:
         self.trades: list[Trade] = []
         self.snapshots: list[EquitySnapshot] = []
         self._funding_applied: set[tuple[str, int]] = set()
+        self._entry_fee_events: list[FeeEvent] = []
+        self._exit_fee_events: list[FeeEvent] = []
+        self._applied_funding_events: list[AppliedFundingEvent] = []
         self._bar_index: int = 0
         self._last_bar_ts: int = 0
         self._eval_start_bar: int = 0
@@ -144,6 +170,18 @@ class PerpEngine:
         self.trade_cooldown_bars: int = max(0, int(cfg.get("trade_cooldown_bars", 0)))
         self._last_entry_bar: dict[str, int] = {}
         self._eval_start_bar = max(0, int(cfg.get("eval_start_bar", 0) or 0))
+
+    @property
+    def entry_fee_events(self) -> tuple[FeeEvent, ...]:
+        return tuple(self._entry_fee_events)
+
+    @property
+    def exit_fee_events(self) -> tuple[FeeEvent, ...]:
+        return tuple(self._exit_fee_events)
+
+    @property
+    def applied_funding_events(self) -> tuple[AppliedFundingEvent, ...]:
+        return tuple(self._applied_funding_events)
 
     def can_execute(self, direction: int, bar) -> bool:
         return True
@@ -226,7 +264,20 @@ class PerpEngine:
                 else previous_close
             )
             notional = pos.size * mark
-            self.capital -= notional * rate * pos.direction
+            amount = -(notional * rate * pos.direction)
+            self.capital += amount
+            self._applied_funding_events.append(
+                AppliedFundingEvent(
+                    symbol=symbol,
+                    timestamp_ms=settlement_timestamp_ms,
+                    direction=pos.direction,
+                    size=pos.size,
+                    mark_price=mark,
+                    rate=rate,
+                    notional=notional,
+                    amount=amount,
+                )
+            )
 
     def _check_liquidation(self, symbol: str, close: float, timestamp_ms: int) -> None:
         pos = self.positions.get(symbol)
@@ -595,6 +646,17 @@ class PerpEngine:
                 comm = self.calc_commission(size, slipped, liquidity="taker")
 
             self.capital -= margin + comm
+            self._entry_fee_events.append(
+                FeeEvent(
+                    symbol=symbol,
+                    timestamp_ms=int(timestamp_ms),
+                    size=size,
+                    price=slipped,
+                    rate=self.taker_rate,
+                    liquidity="taker",
+                    amount=-comm,
+                )
+            )
             self.positions[symbol] = Position(
                 symbol=symbol,
                 direction=target_dir,
@@ -628,6 +690,17 @@ class PerpEngine:
         self.capital += margin + pnl - exit_comm
         holding = max(self._bar_index - pos.entry_bar_index, 0)
         ts_exit = int(exit_ts_ms) if exit_ts_ms is not None else int(self._last_bar_ts)
+        self._exit_fee_events.append(
+            FeeEvent(
+                symbol=symbol,
+                timestamp_ms=ts_exit,
+                size=pos.size,
+                price=exit_price,
+                rate=self.taker_rate,
+                liquidity="taker",
+                amount=-exit_comm,
+            )
+        )
 
         self.trades.append(
             Trade(
@@ -953,6 +1026,11 @@ class PerpEngine:
             "end_ts": end_ts,
             "start_iso": start_iso,
             "end_iso": end_iso,
+            "cost_events": {
+                "entry_fee": [asdict(event) for event in self.entry_fee_events],
+                "exit_fee": [asdict(event) for event in self.exit_fee_events],
+                "applied_funding": [asdict(event) for event in self.applied_funding_events],
+            },
         }
 
         try:
