@@ -226,6 +226,50 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
     assert persisted["cost_events"] == result["cost_events"]
 
 
+def test_forced_close_reconciles_terminal_equity_with_all_cost_events(tmp_path):
+    bars = [
+        [0, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [86_400_000, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [172_800_000, 110.0, 110.0, 110.0, 110.0, 10.0],
+    ]
+    engine = PerpEngine(
+        {
+            "initial_cash": 10_000,
+            "leverage": 1.0,
+            "maker_rate": 0.0,
+            "taker_rate": 0.01,
+            "slippage": 0.0,
+        }
+    )
+
+    result = engine.run(
+        {"BTC/USDT": bars},
+        lambda *_args: 1.0,
+        run_id="forced-close-reconciliation",
+        runs_dir=tmp_path,
+        funding_events_by_symbol={"BTC/USDT": [(129_600_000, 0.001)]},
+    )
+
+    trade = engine.trades[-1]
+    cost_amounts = [
+        event["amount"]
+        for events in result["cost_events"].values()
+        for event in events
+    ]
+    expected_final_equity = engine.initial_cash + trade.pnl + sum(cost_amounts)
+
+    assert trade.exit_reason == "end_of_backtest"
+    assert trade.commission == pytest.approx(
+        -(engine.entry_fee_events[-1].amount + engine.exit_fee_events[-1].amount)
+    )
+    assert result["final_equity"] == pytest.approx(expected_final_equity)
+    assert engine.snapshots[-1].equity == pytest.approx(expected_final_equity)
+    assert engine.snapshots[-1].capital == pytest.approx(expected_final_equity)
+    assert engine.snapshots[-1].position_count == 0
+    assert engine.snapshots[-1].timestamp == bars[-1][0]
+    assert len(engine.snapshots) == len(bars)
+
+
 def test_progress_callback_failure_aborts_with_step_context():
     bars = [[0, 100.0, 100.0, 100.0, 100.0, 10.0]]
 
