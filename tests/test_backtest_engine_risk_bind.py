@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from backtest.engines.perp import PerpEngine
@@ -136,6 +139,93 @@ def test_current_bar_exit_pays_elapsed_and_shared_timestamp_funding():
     # The elapsed settlement uses the prior close (100), while a settlement
     # exactly at the next bar open uses that known open (200), before exit.
     assert engine.capital == pytest.approx(19_700.0)
+
+
+def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
+    bars = [
+        [0, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [86_400_000, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [172_800_000, 100.0, 100.0, 100.0, 100.0, 10.0],
+    ]
+
+    def signal(_symbol, window, _positions, _account):
+        return 0.5 if len(window) == 1 else 0.0
+
+    engine = PerpEngine(
+        {
+            "initial_cash": 10_000,
+            "leverage": 1.0,
+            "maker_rate": 0.0,
+            "taker_rate": 0.01,
+            "slippage": 0.0,
+        }
+    )
+    result = engine.run(
+        {"BTC/USDT": bars},
+        signal,
+        run_id="cost-events",
+        runs_dir=tmp_path,
+        funding_events_by_symbol={
+            "BTC/USDT": [(129_600_000, 0.001), (172_800_000, 0.001)]
+        },
+    )
+
+    assert isinstance(engine.entry_fee_events, tuple)
+    assert isinstance(engine.exit_fee_events, tuple)
+    assert isinstance(engine.applied_funding_events, tuple)
+    with pytest.raises(FrozenInstanceError):
+        engine.entry_fee_events[0].amount = 0.0
+
+    assert result["cost_events"] == {
+        "entry_fee": [
+            {
+                "symbol": "BTC/USDT",
+                "timestamp_ms": 86_400_000,
+                "size": 50.0,
+                "price": 100.0,
+                "rate": 0.01,
+                "liquidity": "taker",
+                "amount": -50.0,
+            }
+        ],
+        "exit_fee": [
+            {
+                "symbol": "BTC/USDT",
+                "timestamp_ms": 172_800_000,
+                "size": 50.0,
+                "price": 100.0,
+                "rate": 0.01,
+                "liquidity": "taker",
+                "amount": -50.0,
+            }
+        ],
+        "applied_funding": [
+            {
+                "symbol": "BTC/USDT",
+                "timestamp_ms": 129_600_000,
+                "direction": 1,
+                "size": 50.0,
+                "mark_price": 100.0,
+                "rate": 0.001,
+                "notional": 5_000.0,
+                "amount": -5.0,
+            },
+            {
+                "symbol": "BTC/USDT",
+                "timestamp_ms": 172_800_000,
+                "direction": 1,
+                "size": 50.0,
+                "mark_price": 100.0,
+                "rate": 0.001,
+                "notional": 5_000.0,
+                "amount": -5.0,
+            },
+        ],
+    }
+    persisted = json.loads(
+        (tmp_path / "backtests/cost-events/summary.json").read_text(encoding="utf-8")
+    )
+    assert persisted["cost_events"] == result["cost_events"]
 
 
 def test_progress_callback_failure_aborts_with_step_context():
