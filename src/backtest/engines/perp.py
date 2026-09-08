@@ -112,6 +112,7 @@ class EquitySnapshot:
 class FeeEvent:
     symbol: str
     timestamp_ms: int
+    application_bar_timestamp_ms: int
     size: float
     price: float
     rate: float
@@ -123,6 +124,7 @@ class FeeEvent:
 class AppliedFundingEvent:
     symbol: str
     timestamp_ms: int
+    application_bar_timestamp_ms: int
     direction: int
     size: float
     mark_price: float
@@ -270,6 +272,7 @@ class PerpEngine:
                 AppliedFundingEvent(
                     symbol=symbol,
                     timestamp_ms=settlement_timestamp_ms,
+                    application_bar_timestamp_ms=int(timestamp_ms),
                     direction=pos.direction,
                     size=pos.size,
                     mark_price=mark,
@@ -295,6 +298,7 @@ class PerpEngine:
                 self.apply_slippage(close, -pos.direction),
                 "liquidation",
                 exit_ts_ms=int(timestamp_ms),
+                application_bar_timestamp_ms=int(timestamp_ms),
             )
 
     def _check_timeout(self, symbol: str, close: float, timestamp_ms: int) -> None:
@@ -312,6 +316,7 @@ class PerpEngine:
                 self.apply_slippage(close, -pos.direction),
                 "timeout",
                 exit_ts_ms=int(timestamp_ms),
+                application_bar_timestamp_ms=int(timestamp_ms),
             )
 
     def _check_tp_sl(
@@ -362,6 +367,7 @@ class PerpEngine:
                 self.apply_slippage(sl_px, -pos.direction),
                 "stop_loss",
                 exit_ts_ms=int(timestamp_ms),
+                application_bar_timestamp_ms=int(timestamp_ms),
             )
             return
         if hit_tp and tp_px is not None:
@@ -370,6 +376,7 @@ class PerpEngine:
                 self.apply_slippage(tp_px, -pos.direction),
                 "take_profit",
                 exit_ts_ms=int(timestamp_ms),
+                application_bar_timestamp_ms=int(timestamp_ms),
             )
 
     def run(
@@ -574,6 +581,7 @@ class PerpEngine:
                     final_close[sym],
                     "end_of_backtest",
                     exit_ts_ms=final_ts,
+                    application_bar_timestamp_ms=final_ts,
                 )
             final_equity = self._equity(final_close, timestamp_ms=final_ts)
             self.snapshots[-1] = EquitySnapshot(
@@ -622,7 +630,13 @@ class PerpEngine:
         if current is not None:
             if target_dir == 0 or target_dir != current.direction:
                 price = self.apply_slippage(bar_open, -current.direction)
-                self._close(symbol, price, "signal", exit_ts_ms=int(timestamp_ms))
+                self._close(
+                    symbol,
+                    price,
+                    "signal",
+                    exit_ts_ms=int(timestamp_ms),
+                    application_bar_timestamp_ms=int(timestamp_ms),
+                )
                 current = self.positions.get(symbol)
 
         if target_dir != 0 and symbol not in self.positions:
@@ -658,6 +672,7 @@ class PerpEngine:
                 FeeEvent(
                     symbol=symbol,
                     timestamp_ms=int(timestamp_ms),
+                    application_bar_timestamp_ms=int(timestamp_ms),
                     size=size,
                     price=slipped,
                     rate=self.taker_rate,
@@ -685,6 +700,7 @@ class PerpEngine:
         reason: str,
         *,
         exit_ts_ms: int | None = None,
+        application_bar_timestamp_ms: int,
     ) -> None:
         pos = self.positions.pop(symbol, None)
         if pos is None:
@@ -698,10 +714,12 @@ class PerpEngine:
         self.capital += margin + pnl - exit_comm
         holding = max(self._bar_index - pos.entry_bar_index, 0)
         ts_exit = int(exit_ts_ms) if exit_ts_ms is not None else int(self._last_bar_ts)
+        ts_application = int(application_bar_timestamp_ms)
         self._exit_fee_events.append(
             FeeEvent(
                 symbol=symbol,
                 timestamp_ms=ts_exit,
+                application_bar_timestamp_ms=ts_application,
                 size=pos.size,
                 price=exit_price,
                 rate=self.taker_rate,

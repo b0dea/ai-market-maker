@@ -173,6 +173,10 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
     assert isinstance(engine.applied_funding_events, tuple)
     with pytest.raises(FrozenInstanceError):
         engine.entry_fee_events[0].amount = 0.0
+    with pytest.raises(FrozenInstanceError):
+        engine.exit_fee_events[0].application_bar_timestamp_ms = 0
+    with pytest.raises(FrozenInstanceError):
+        engine.applied_funding_events[0].application_bar_timestamp_ms = 0
 
     assert result["cost_events"] == {
         "entry_fee": [
