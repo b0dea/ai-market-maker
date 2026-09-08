@@ -179,6 +179,7 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
             {
                 "symbol": "BTC/USDT",
                 "timestamp_ms": 86_400_000,
+                "application_bar_timestamp_ms": 86_400_000,
                 "size": 50.0,
                 "price": 100.0,
                 "rate": 0.01,
@@ -190,6 +191,7 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
             {
                 "symbol": "BTC/USDT",
                 "timestamp_ms": 172_800_000,
+                "application_bar_timestamp_ms": 172_800_000,
                 "size": 50.0,
                 "price": 100.0,
                 "rate": 0.01,
@@ -201,6 +203,7 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
             {
                 "symbol": "BTC/USDT",
                 "timestamp_ms": 129_600_000,
+                "application_bar_timestamp_ms": 172_800_000,
                 "direction": 1,
                 "size": 50.0,
                 "mark_price": 100.0,
@@ -211,6 +214,7 @@ def test_run_exports_immutable_fee_and_applied_funding_events(tmp_path):
             {
                 "symbol": "BTC/USDT",
                 "timestamp_ms": 172_800_000,
+                "application_bar_timestamp_ms": 172_800_000,
                 "direction": 1,
                 "size": 50.0,
                 "mark_price": 100.0,
@@ -259,6 +263,8 @@ def test_forced_close_reconciles_terminal_equity_with_all_cost_events(tmp_path):
     expected_final_equity = engine.initial_cash + trade.pnl + sum(cost_amounts)
 
     assert trade.exit_reason == "end_of_backtest"
+    assert engine.exit_fee_events[-1].timestamp_ms == bars[-1][0]
+    assert engine.exit_fee_events[-1].application_bar_timestamp_ms == bars[-1][0]
     assert trade.commission == pytest.approx(
         -(engine.entry_fee_events[-1].amount + engine.exit_fee_events[-1].amount)
     )
